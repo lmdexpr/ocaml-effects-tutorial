@@ -52,7 +52,19 @@ type 'a tree =
 | Leaf of 'a
 | Node of 'a tree * 'a tree
 
-let same_fringe t1 t2 = failwith "not implemented"
+let rec iter f = function
+  | Leaf v             -> f v
+  | Node (left, right) -> iter f left; iter f right
+
+let same_fringe t1 t2 =
+  let t1 = generate iter t1 and t2 = generate iter t2 in
+  let rec same_fringe () =
+    match t1 (), t2 () with
+    | Some t1, Some t2 -> t1 = t2 && same_fringe ()
+    | None, None       -> true
+    | _                -> false
+  in
+  same_fringe ()
 
 let t1 = Node (Leaf 1, Node (Leaf 2, Leaf 3))
 let t2 = Node (Node (Leaf 1, Leaf 2), Leaf 3)
@@ -68,3 +80,5 @@ assert (same_fringe t2 t1);;
 assert (not (same_fringe t1 t3));;
 assert (same_fringe t1 t7);;
 assert (same_fringe t2 t7);;
+
+assert (not (same_fringe t6 t7));;
