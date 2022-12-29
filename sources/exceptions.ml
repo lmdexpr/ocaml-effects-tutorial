@@ -1,8 +1,17 @@
-let raise (e : exn) : 'a = failwith "not implemented"
-(* Todo *)
+open Effect
 
-let try_with (f : unit -> 'a) (h : exn -> 'a) : 'a = failwith "not implemented"
-(* Todo *)
+type _ Effect.t += Exn : exn -> 'a Effect.t
+let raise (e : exn) : 'a = perform @@ Exn e
+
+let try_with (f : unit -> 'a) (h : exn -> 'a) : 'a =
+  let open Deep in
+  try_with f ()
+  { effc = (fun (type b) (eff: b Effect.t) ->
+    match eff with
+    | Exn e -> Some (fun (_: (b,_) continuation) -> h e)
+    | _     -> None
+    )
+  }
 
 exception Invalid_argument
 
