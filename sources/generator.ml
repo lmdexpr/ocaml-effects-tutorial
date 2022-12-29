@@ -4,13 +4,33 @@ type 'elt generator = unit -> 'elt option
 
 let generate (type elt) (i : (elt, 'container) iterator) (c : 'container) : elt generator =
   let open Effect in
-  let module M = struct
-      type _ Effect.t +=
-          Yield : elt -> unit Effect.t
-    end
+  let open Shallow in
+  let open struct
+    type _ Effect.t += Yield : elt -> unit Effect.t
+    type ('a, 'b) status =
+      | Start
+      | InProgress of ('a, 'b) continuation
+      | Finished
+  end
   in
-  let open M in
-  failwith "Not implemented"
+  let yield x = perform @@ Yield x in
+  let status = ref Start in
+  let rec generate () =
+    match !status with
+    | Finished     -> None
+    | Start        -> status := InProgress (fiber @@ fun () -> i yield c); generate ()
+    | InProgress k ->
+      continue_with k ()
+        { retc = (fun _ -> status := Finished; generate ())
+        ; exnc = raise
+        ; effc = (fun (type c) (eff: c t) ->
+              match eff with
+              | Yield x -> Some (fun (k: (c,_) continuation) -> status := InProgress k; Some x)
+              | _       -> None
+            )
+        }
+  in
+  generate
 
 (***********************)
 (* Traversal generator *)
@@ -44,7 +64,7 @@ assert (None = ga ());;
 (* Iterator over nats. Dummy () container. *)
 let rec nats : int (* init *) -> (int, unit) iterator =
   fun v f () ->
-    f v; nats (v+1) f ()
+  f v; nats (v+1) f ()
 
 (* Infinite stream *)
 type 'a stream = unit -> 'a
@@ -52,9 +72,9 @@ type 'a stream = unit -> 'a
 (* Convert generator to an infinite stream *)
 let inf : 'a generator -> 'a stream  =
   fun g () ->
-    match g () with
-    | Some n -> n
-    | _ -> assert false
+  match g () with
+  | Some n -> n
+  | _ -> assert false
 
 (* Nat stream *)
 let gen_nats : int stream = inf (generate (nats 0) ())
@@ -68,9 +88,9 @@ assert (3 = gen_nats ());;
 (* filter stream *)
 let rec filter : 'a stream -> ('a -> bool) -> 'a stream =
   fun g p () ->
-    let v = g () in
-    if p v then v
-    else filter g p ()
+  let v = g () in
+  if p v then v
+  else filter g p ()
 
 (* map stream *)
 let rec map : 'a stream -> ('a -> 'b) -> 'b stream =
