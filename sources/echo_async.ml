@@ -23,8 +23,8 @@ module Aio : Aio = struct
   open Effect.Deep
 
   type 'a _promise =
-    Waiting of ('a,unit) continuation list
-  | Done of 'a
+      Waiting of ('a,unit) continuation list
+    | Done of 'a
 
   type 'a promise = 'a _promise ref
 
@@ -86,14 +86,14 @@ module Aio : Aio = struct
       let rec resume ht = function
         | [] -> ()
         | x::xs ->
-            begin match Hashtbl.find ht x with
+          begin match Hashtbl.find ht x with
             | Blocked (Recv (fd, buf, pos, len, mode), k) ->
-                enqueue (fun () -> continue k (Unix.recv fd buf pos len mode))
+              enqueue (fun () -> continue k (Unix.recv fd buf pos len mode))
             | Blocked (Accept fd, k) -> failwith "not implemented"
             | Blocked (Send (fd, buf, pos, len, mode), k) -> failwith "not implemented"
             | Blocked _ -> failwith "impossible"
-            end;
-            Hashtbl.remove ht x
+          end;
+          Hashtbl.remove ht x
       in
       resume br rdy_rd_fds;
       resume br rdy_wr_fds;
@@ -104,60 +104,70 @@ module Aio : Aio = struct
     let rec fork : 'a. 'a promise -> (unit -> 'a) -> unit =
       fun pr main ->
         match_with main ()
-        { retc = (fun v ->
-            let l = match !pr with Waiting l -> l | _ -> failwith "impossible" in
-            List.iter (fun k -> enqueue (fun () -> continue k v)) l;
-            pr := Done v;
-            schedule ()
-          );
-          exnc = raise;
-          effc = (fun (type b) (eff: b Effect.t) ->
-              match eff with
-              | Async f -> Some (fun (k: (b,_) continuation) ->
+          { retc = (fun v ->
+                let l = match !pr with Waiting l -> l | _ -> failwith "impossible" in
+                List.iter (fun k -> enqueue (fun () -> continue k v)) l;
+                pr := Done v;
+                schedule ()
+              );
+            exnc = raise;
+            effc = (fun (type b) (eff: b Effect.t) ->
+                match eff with
+                | Async f -> Some (fun (k: (b,_) continuation) ->
                     let pr = ref (Waiting []) in
                     enqueue (fun () -> continue k pr);
                     fork pr f
-                )
-              | Yield -> Some (fun (k: (b,_) continuation) ->
+                  )
+                | Yield -> Some (fun (k: (b,_) continuation) ->
                     enqueue (continue k);
                     schedule ()
-                ) 
-              | Await p -> Some (fun (k: (b,_) continuation) ->
+                  ) 
+                | Await p -> Some (fun (k: (b,_) continuation) ->
                     begin match !p with
-                    | Done v -> continue k v
-                    | Waiting l -> begin
-                        p := Waiting (k::l);
-                        schedule ()
-                      end
+                      | Done v -> continue k v
+                      | Waiting l -> begin
+                          p := Waiting (k::l);
+                          schedule ()
+                        end
                     end
-                ) 
-              | Accept fd -> Some (fun (k: (b,_) continuation) ->
-                      failwith "accept not implemented"
-                      )
-              | Send (fd,buf,pos,len,mode) -> Some (fun (k: (b,_) continuation) ->
-                      failwith "send not implemented"
-                      )
-              | (Recv (fd,buf,pos,len,mode) as e) -> Some (fun (k: (b,_) continuation) ->
+                  ) 
+                | (Accept fd as e) -> Some (fun (k: (b,_) continuation) ->
+                    if ready_to_read fd then
+                      continue k (Unix.accept fd)
+                    else begin
+                      Hashtbl.add br fd (Blocked (e, k));
+                      schedule ()
+                    end
+                  )
+                | (Send (fd,buf,pos,len,mode) as e) -> Some (fun (k: (b,_) continuation) ->
+                    if ready_to_write fd then
+                      continue k (Unix.send fd buf pos len mode)
+                    else begin
+                      Hashtbl.add bw fd (Blocked (e, k));
+                      schedule ()
+                    end
+                  )
+                | (Recv (fd,buf,pos,len,mode) as e) -> Some (fun (k: (b,_) continuation) ->
                     if ready_to_read fd then
                       continue k (Unix.recv fd buf pos len mode)
                     else begin
                       Hashtbl.add br fd (Blocked (e, k));
                       schedule ()
                     end
-                      )
-              | _ -> None
-        )}
+                  )
+                | _ -> None
+              )}
     in
     fork (ref (Waiting [])) main
 end
 
 module M = Echo.Make(struct
-  let accept = Aio.accept
-  let recv = Aio.recv
-  let send = Aio.send
-  let fork f = ignore (Aio.async f)
-  let run f = Aio.run f
-  let non_blocking_mode = true
-end)
+    let accept = Aio.accept
+    let recv = Aio.recv
+    let send = Aio.send
+    let fork f = ignore (Aio.async f)
+    let run f = Aio.run f
+    let non_blocking_mode = true
+  end)
 
 let _ = M.start ()
