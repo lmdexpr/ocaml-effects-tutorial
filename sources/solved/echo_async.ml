@@ -103,62 +103,49 @@ module Aio : Aio = struct
     end
 
   let run main =
-    let rec fork : 'a. 'a promise -> (unit -> 'a) -> unit =
-      fun pr main ->
-        match_with main ()
-        { retc = (fun v ->
-            let l = match !pr with Waiting l -> l | _ -> failwith "impossible" in
-            List.iter (fun k -> enqueue (fun () -> continue k v)) l;
-            pr := Done v;
+    let rec fork : 'a. 'a promise -> (unit -> 'a) -> unit = fun pr main ->
+      match main () with
+      | v ->
+        let l = match !pr with Waiting l -> l | _ -> failwith "impossible" in
+        List.iter (fun k -> enqueue (fun () -> continue k v)) l;
+        pr := Done v;
+        schedule ()
+      | effect Async f, k-> 
+        let pr = ref (Waiting []) in
+        enqueue (fun () -> continue k pr);
+        fork pr f
+      | effect Yield, k ->
+        enqueue (continue k);
+        schedule ()
+      | effect Await p, k ->
+        begin match !p with
+          | Done v -> continue k v
+          | Waiting l -> begin
+            p := Waiting (k::l);
             schedule ()
-          );
-          exnc = raise;
-          effc = (fun (type b) (eff: b Effect.t) ->
-              match eff with
-              | Async f -> Some (fun (k: (b,_) continuation) ->
-                    let pr = ref (Waiting []) in
-                    enqueue (fun () -> continue k pr);
-                    fork pr f
-                )
-              | Yield -> Some (fun (k: (b,_) continuation) ->
-                    enqueue (continue k);
-                    schedule ()
-                ) 
-              | Await p -> Some (fun (k: (b,_) continuation) ->
-                    begin match !p with
-                    | Done v -> continue k v
-                    | Waiting l -> begin
-                        p := Waiting (k::l);
-                        schedule ()
-                      end
-                    end
-                ) 
-              | (Accept fd as e) -> Some (fun (k: (b,_) continuation) ->
-                      if ready_to_read fd then
-                          continue k (Unix.accept fd)
-                      else begin
-                          Hashtbl.add br fd (Blocked (e,k));
-                          schedule ()
-                      end
-                      )
-              | (Send (fd,buf,pos,len,mode) as e) -> Some (fun (k: (b,_) continuation) ->
-                      if ready_to_write fd then
-                        continue k (Unix.send fd buf pos len mode)
-                      else begin
-                        Hashtbl.add bw fd (Blocked (e,k));
-                        schedule ()
-                      end
-                      )
-              | (Recv (fd,buf,pos,len,mode) as e) -> Some (fun (k: (b,_) continuation) ->
-                    if ready_to_read fd then
-                      continue k (Unix.recv fd buf pos len mode)
-                    else begin
-                      Hashtbl.add br fd (Blocked (e, k));
-                      schedule ()
-                    end
-                      )
-              | _ -> None
-        )}
+            end
+          end
+      | effect (Accept fd as e), k ->
+        if ready_to_read fd then
+          continue k (Unix.accept fd)
+        else begin
+          Hashtbl.add br fd (Blocked (e,k));
+          schedule ()
+          end
+      | effect (Send (fd,buf,pos,len,mode) as e), k ->
+        if ready_to_write fd then
+          continue k (Unix.send fd buf pos len mode)
+        else begin
+          Hashtbl.add bw fd (Blocked (e,k));
+          schedule ()
+          end
+      | effect (Recv (fd,buf,pos,len,mode) as e), k ->
+        if ready_to_read fd then
+          continue k (Unix.recv fd buf pos len mode)
+        else begin
+          Hashtbl.add br fd (Blocked (e, k));
+          schedule ()
+          end
     in
     fork (ref (Waiting [])) main
 end
